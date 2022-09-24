@@ -1,3 +1,9 @@
+{-# OPTIONS_GHC -Wno-deprecations #-}
+{-# OPTIONS_GHC -Wno-unused-local-binds #-}
+{-# OPTIONS_GHC -Wno-unused-matches #-}
+{-# OPTIONS_GHC -Wno-unused-imports #-}
+{-# LANGUAGE BlockArguments #-}
+
 module Language.PureScript.Ide.Usage
   ( findReexportingModules
   , directDependants
@@ -8,13 +14,20 @@ module Language.PureScript.Ide.Usage
 
 import           Protolude hiding (moduleName)
 
-import           Control.Lens (preview)
+import           Control.Lens (preview, (^.))
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified Language.PureScript as P
 import           Language.PureScript.Ide.State (getAllModules, getFileState)
 import           Language.PureScript.Ide.Types
 import           Language.PureScript.Ide.Util
+
+-- Garbage imports for debugging
+import Data.Aeson (toJSON, encode)
+import Data.Aeson.Encode.Pretty (encodePretty)
+import Control.Lens.Fold ((^?))
+import GHC.IO (unsafePerformIO)
+import Control.Arrow ((&&&), (***))
 
 -- |
 -- How we find usages, given an IdeDeclaration and the module it was defined in:
@@ -30,13 +43,30 @@ findUsages
   -> P.ModuleName
   -> m (ModuleMap (NonEmpty P.SourceSpan))
 findUsages declaration moduleName = do
-  ms <- getAllModules Nothing
-  asts <- Map.map fst . fsModules <$> getFileState
-  let elig = eligibleModules (moduleName, declaration) ms asts
-  pure
-    $ Map.mapMaybe nonEmpty
-    $ Map.mapWithKey (\mn searches ->
-        foldMap (\m -> foldMap (applySearch m) searches) (Map.lookup mn asts)) elig
+  ideDeclarationAnnsByModuleName <- getAllModules Nothing
+  modulesByModuleName <- Map.map fst . fsModules <$> getFileState
+  -- print moduleName
+  let searchesByModuleName = eligibleModules (moduleName, declaration) ideDeclarationAnnsByModuleName modulesByModuleName
+  -- traceShowM searchesByModuleName
+  -- Note that we're keeping the same module names
+  let sourceSpansByModuleName = searchesByModuleName & Map.mapWithKey 
+        -- for each module name and list of searches in eligible modules
+        \moduleName' searches -> do
+          let maybeModule = Map.lookup moduleName' modulesByModuleName
+          case maybeModule of
+            Nothing -> []
+            Just module' -> do
+              let searchToSourceSpans = applySearch module'
+                  sourceSpans = foldMap (uncurry (<>) . (searchToSourceSpans *** identity)) searches
+              sourceSpans
+  -- let sourceSpansByModuleName' =
+  --      sourceSpansByModuleName & Map.insertWith (<>) moduleName _wer
+  let xs = Map.mapMaybe nonEmpty sourceSpansByModuleName
+  -- putStr (encodePretty xs)
+  pure xs
+  -- Need to add to this xs:
+  --  - the definition site
+  --  - all imports
 
 -- | A declaration can either be imported qualified, or unqualified. All the
 -- information we need to find usages through a Traversal is thus captured in
@@ -59,68 +89,93 @@ findReexportingModules (moduleName, declaration) decls =
       (d & _idaDeclaration & identifierFromIdeDeclaration) == identifierFromIdeDeclaration declaration
       && (d & _idaAnnotation & _annExportedFrom) == Just moduleName
       && (d & _idaDeclaration & namespaceForDeclaration) == namespaceForDeclaration declaration
-
-directDependants :: IdeDeclaration -> ModuleMap P.Module -> P.ModuleName -> ModuleMap (NonEmpty Search)
-directDependants declaration modules mn = Map.mapMaybe (nonEmpty . go) modules
+-- TODO: What does this do???
+directDependants :: IdeDeclaration -> ModuleMap P.Module -> P.ModuleName -> ModuleMap (NonEmpty (Search, [P.SourceSpan]))
+directDependants declaration modulesByModuleName moduleName = Map.mapMaybe (nonEmpty . go) modulesByModuleName
   where
-    go :: P.Module -> [Search]
+    go :: P.Module -> [(Search, [P.SourceSpan])]
+    -- Just focus on the ImportDeclarations, 
     go = foldMap isImporting . P.getModuleDeclarations
 
+    isImporting :: P.Declaration -> [(P.Qualified IdeDeclaration, [P.SourceSpan])]
     isImporting d = case d of
-      P.ImportDeclaration _ mn' it qual | mn == mn' -> P.Qualified (P.byMaybeModuleName qual) <$> case it of
-        P.Implicit -> pure declaration
-        P.Explicit refs
-          | any (declaration `matchesRef`) refs -> pure declaration
-        P.Explicit _ -> []
-        P.Hiding refs
-          | not (any (declaration `matchesRef`) refs) -> pure declaration
-        P.Hiding _ -> []
+      P.ImportDeclaration _ moduleName' importDeclarationType qual
+        | moduleName == moduleName' -> first (P.Qualified (P.byMaybeModuleName qual)) <$> case importDeclarationType of
+          P.Implicit -> do
+            -- traceM "\n______________________"
+            -- traceM "Implicit"
+            -- traceShowM d
+            pure (declaration, [])
+          P.Explicit refs
+            | any (isJust . spanOfRefMatching declaration) refs -> do
+              -- traceM "\n______________________"
+              -- traceM "P.Explicit refs with refs matching declaration"
+              -- for_ refs (traceM . ("\n >>> " <>) . show)
+              pure (declaration, mapMaybe (spanOfRefMatching declaration) refs)
+          P.Explicit refs -> do
+            -- traceM "\n______________________"
+            -- traceM "P.Explicit refs with NO refs matching declaration"
+            -- for_ refs (traceM . ("\n >>> " <>) . show)
+            []
+          P.Hiding refs
+            | not (any (isJust . spanOfRefMatching declaration) refs) -> do
+              -- traceM "\n______________________"
+              -- traceM "P.Hiding refs"
+              -- for_ refs (traceM . ("\n >>> " <>) . show)
+              pure (declaration, mapMaybe (spanOfRefMatching declaration) refs)
+          P.Hiding _ -> do
+            traceM "Hiding"
+            []
       _ -> []
 
 -- | Determines whether an IdeDeclaration is referenced by a DeclarationRef.
 --
 -- TODO(Christoph): We should also extract the spans of matching refs here,
 -- since they also count as a usage (at least for rename refactorings)
-matchesRef :: IdeDeclaration -> P.DeclarationRef -> Bool
-matchesRef declaration ref = case declaration of
+
+-- True            | False
+-- Just SourceSpan | Nothing
+
+spanOfRefMatching :: IdeDeclaration -> P.DeclarationRef -> Maybe P.SourceSpan
+spanOfRefMatching declaration ref = case declaration of
   IdeDeclValue valueDecl -> case ref of
-    P.ValueRef _ i -> i == _ideValueIdent valueDecl
-    _ -> False
+    P.ValueRef span i | i == _ideValueIdent valueDecl -> Just span
+    _ -> Nothing
   IdeDeclType typeDecl -> case ref of
-    P.TypeRef _ tn _ -> tn == _ideTypeName typeDecl
-    _ -> False
+    P.TypeRef span tn what | tn == _ideTypeName typeDecl -> Just span
+    _ -> Nothing
   IdeDeclTypeSynonym synonym -> case ref of
-    P.TypeRef _ tn _ -> tn == _ideSynonymName synonym
-    _ -> False
+    P.TypeRef span tn _ | tn == _ideSynonymName synonym -> Just span
+    _ -> Nothing
   IdeDeclDataConstructor dtor -> case ref of
-    P.TypeRef _ tn dtors
+    P.TypeRef span tn dtors
     -- We check if the given data constructor constructs the type imported
     -- here.
     -- This way we match `Just` with an import like `import Data.Maybe (Maybe(..))`
-      | _ideDtorTypeName dtor == tn ->
-          maybe True (elem (_ideDtorName dtor)) dtors
-    _ -> False
+      | _ideDtorTypeName dtor == tn
+        && maybe True (elem (_ideDtorName dtor)) dtors -> Just span
+    _ -> Nothing
   IdeDeclTypeClass typeClass -> case ref of
-    P.TypeClassRef _ name -> name == _ideTCName typeClass
-    _ -> False
+    P.TypeClassRef span name | name == _ideTCName typeClass -> Just span
+    _ -> Nothing
   IdeDeclValueOperator valueOperator -> case ref of
-    P.ValueOpRef _ opName -> opName == _ideValueOpName valueOperator
-    _ -> False
+    P.ValueOpRef span opName | opName == _ideValueOpName valueOperator -> Just span
+    _ -> Nothing
   IdeDeclTypeOperator typeOperator -> case ref of
-    P.TypeOpRef _ opName -> opName == _ideTypeOpName typeOperator
-    _ -> False
+    P.TypeOpRef span opName | opName == _ideTypeOpName typeOperator -> Just span
+    _ -> Nothing
   IdeDeclModule m -> case ref of
-    P.ModuleRef _ mn -> m == mn
-    _ -> False
+    P.ModuleRef span mn | m == mn -> Just span
+    _ -> Nothing
 
 eligibleModules
   :: (P.ModuleName, IdeDeclaration)
   -> ModuleMap [IdeDeclarationAnn]
   -> ModuleMap P.Module
-  -> ModuleMap (NonEmpty Search)
+  -> ModuleMap (NonEmpty (Search, [P.SourceSpan]))
 eligibleModules query@(moduleName, declaration) decls modules =
   let
-    searchDefiningModule = P.Qualified P.ByNullSourcePos declaration :| []
+    searchDefiningModule = (P.Qualified P.ByNullSourcePos declaration, []) :| []
   in
     Map.insert moduleName searchDefiningModule $
       foldMap (directDependants declaration modules) (moduleName :| findReexportingModules query decls)
