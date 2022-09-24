@@ -45,12 +45,8 @@ findUsages
 findUsages declaration moduleName = do
   ideDeclarationAnnsByModuleName <- getAllModules Nothing
   modulesByModuleName <- Map.map fst . fsModules <$> getFileState
-  -- print moduleName
   let searchesByModuleName = eligibleModules (moduleName, declaration) ideDeclarationAnnsByModuleName modulesByModuleName
-  -- traceShowM searchesByModuleName
-  -- Note that we're keeping the same module names
   let sourceSpansByModuleName = searchesByModuleName & Map.mapWithKey 
-        -- for each module name and list of searches in eligible modules
         \moduleName' searches -> do
           let maybeModule = Map.lookup moduleName' modulesByModuleName
           case maybeModule of
@@ -58,15 +54,12 @@ findUsages declaration moduleName = do
             Just module' -> do
               let searchToSourceSpans = applySearch module'
                   sourceSpans = foldMap (uncurry (<>) . (searchToSourceSpans *** identity)) searches
+                  -- sourceSpans = foldMap (uncurry (<>) . (searchToSourceSpans *** const [])) searches
               sourceSpans
-  -- let sourceSpansByModuleName' =
-  --      sourceSpansByModuleName & Map.insertWith (<>) moduleName _wer
-  let xs = Map.mapMaybe nonEmpty sourceSpansByModuleName
-  -- putStr (encodePretty xs)
-  pure xs
-  -- Need to add to this xs:
+  -- @TODO: Need to add to this
   --  - the definition site
   --  - all imports
+  pure (Map.mapMaybe nonEmpty sourceSpansByModuleName)
 
 -- | A declaration can either be imported qualified, or unqualified. All the
 -- information we need to find usages through a Traversal is thus captured in
@@ -89,12 +82,11 @@ findReexportingModules (moduleName, declaration) decls =
       (d & _idaDeclaration & identifierFromIdeDeclaration) == identifierFromIdeDeclaration declaration
       && (d & _idaAnnotation & _annExportedFrom) == Just moduleName
       && (d & _idaDeclaration & namespaceForDeclaration) == namespaceForDeclaration declaration
--- TODO: What does this do???
+-- @TODO: What does this do???
 directDependants :: IdeDeclaration -> ModuleMap P.Module -> P.ModuleName -> ModuleMap (NonEmpty (Search, [P.SourceSpan]))
 directDependants declaration modulesByModuleName moduleName = Map.mapMaybe (nonEmpty . go) modulesByModuleName
   where
     go :: P.Module -> [(Search, [P.SourceSpan])]
-    -- Just focus on the ImportDeclarations, 
     go = foldMap isImporting . P.getModuleDeclarations
 
     isImporting :: P.Declaration -> [(P.Qualified IdeDeclaration, [P.SourceSpan])]
@@ -132,10 +124,8 @@ directDependants declaration modulesByModuleName moduleName = Map.mapMaybe (nonE
 --
 -- TODO(Christoph): We should also extract the spans of matching refs here,
 -- since they also count as a usage (at least for rename refactorings)
-
--- True            | False
--- Just SourceSpan | Nothing
-
+-- @TODO(Pete): we're now doing that (this function now returns 'Maybe P.SourceSpan'
+-- instead of 'Bool') but what do we do with it?
 spanOfRefMatching :: IdeDeclaration -> P.DeclarationRef -> Maybe P.SourceSpan
 spanOfRefMatching declaration ref = case declaration of
   IdeDeclValue valueDecl -> case ref of

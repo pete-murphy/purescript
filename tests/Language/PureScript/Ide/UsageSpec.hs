@@ -55,29 +55,35 @@ _UsagesResult = prism' UsagesResult \case
   UsagesResult xs -> Just xs
   _ -> Nothing
 
--- displaySourceSpan :: P.SourceSpan -> Text
--- displaySourceSpan P.SourceSpan {spanName, spanStart, spanEnd}
---    = (Text.pack . last) (splitOn "/" spanName) <> ":" <> P.displaySourcePosShort spanStart <> "-" <> P.displaySourcePosShort spanEnd
-
 spec :: Spec
 spec = describe "Finding Usages" $ do
     it "finds a simple usage" $ do
-      (xs, _) <- Test.inProject $
+
+      ([_, Right (UsagesResult
+        [ usage1
+        , import1
+        , usage2
+        -- , export1
+        -- , export1
+        ])], _) <- Test.inProject $
+      -- ([_, Right (UsagesResult xs)], _) <- Test.inProject $
+      -- (xs, _) <- Test.inProject $
         Test.runIde [ load ["FindUsage", "FindUsage.Definition", "FindUsage.Reexport"]
                     , usage (Test.mn "FindUsage.Definition") "usageId" IdeNSValue
                     ]
-      dir <- getCurrentDirectory
-      forOf_ (folded . _Right . _UsagesResult . folded) xs (traceM . P.displaySourceSpan dir)
-      
-      pure ()
-      -- ([_, Right (UsagesResult [usage3, usage4])], _) <- Test.inProject $
-      --   Test.runIde [ load ["FindUsage", "FindUsage.Definition", "FindUsage.Reexport"]
-      --               , usage (Test.mn "FindUsage") "usageId" IdeNSValue
-      --               ]
-      -- usage1 `shouldBeUsage` ("src" </> "FindUsage" </> "Definition.purs", "9:1-9:8")
-      -- usage2 `shouldBeUsage` ("src" </> "FindUsage" </> "Definition.purs", "10:1-10:8")
-      -- usage3 `shouldBeUsage` ("src" </> "FindUsage.purs", "12:11-12:18")
-      -- usage4 `shouldBeUsage` ("src" </> "FindUsage" </> "Definition.purs", "13:18-13:25")
+
+      -- Import/export cases
+      import1 `shouldBeUsage` ("src" </> "FindUsage.purs", "3:30-3:37")
+      -- export1 `shouldBeUsage` ("src" </> "FindUsage" </> "Definition.purs", "1:47-1:54")
+
+      -- Where it's defined
+      -- deftype `shouldBeUsage` ("src" </> "FindUsage" </> "Definition.purs", "9:1-9:8")
+      -- def `shouldBeUsage` ("src" </> "FindUsage" </> "Definition.purs", "10:1-10:8")
+     
+      -- Existing usage cases
+      usage1 `shouldBeUsage` ("src" </> "FindUsage.purs", "12:11-12:18")
+      usage2 `shouldBeUsage` ("src" </> "FindUsage" </> "Definition.purs", "13:18-13:25")
+
     xit "finds a simple recursive usage" $ do
       ([_, Right (UsagesResult [usage1])], _) <- Test.inProject $
         Test.runIde [ load ["FindUsage.Recursive"]
