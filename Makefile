@@ -22,8 +22,9 @@ ghcid: ## Run ghcid to quickly reload code on save.
 	ghcid --command "stack ghci purescript:exe:purs purescript:lib purescript:test:tests --main-is purescript:exe:purs --ghci-options -fno-code"
 
 ghcid-test: ## Run ghcid to quickly reload code and run tests on save.
-	ghcid --command "stack ghci purescript:lib purescript:test:tests --ghci-options -fobject-code" \
-	    --test "Main.main"
+# ghcid --command "stack ghci purescript:lib purescript:test:tests --ghci-options -fobject-code" \
+#     --test "Main.main"
+	ghcid -c "stack ghci purescript:lib purescript:test:tests" -T "hspec Language.PureScript.Ide.UsageSpec.spec"
 
 build: ## Build the package.
 	$(stack) build $(package)

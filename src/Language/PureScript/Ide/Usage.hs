@@ -30,6 +30,7 @@ import GHC.IO (unsafePerformIO)
 import Control.Arrow ((&&&), (***))
 import Control.Lens.Combinators (ifor_, itraverse_)
 import Protolude.Partial (fromJust)
+import Language.PureScript.Names (disqualify)
 
 -- |
 -- How we find usages, given an IdeDeclaration and the module it was defined in:
@@ -59,8 +60,25 @@ findUsages ideDeclaration moduleName = do
     -- refs has export reference
     \(P.Module _ _ _ declarations mbDeclarationRefs) -> do
       ifor_ declarations \i declaration -> do
-        traceM ("\n\n(declaration:" <> show i <> "):")
-        traceShowM declaration
+        -- traceM ("\n\n(declaration:" <> show i <> "):")
+        -- traceShowM declaration
+        case (declaration, ideDeclaration) of
+          -- P.DataDeclaration (span, _) _ name z z'  -> pure ()
+          -- @TODO: Recur here
+          -- P.DataBindingGroupDeclaration _ -> pure ()
+          -- P.TypeSynonymDeclaration (span, _) name _ _ -> pure ()
+          -- P.KindDeclaration (span, _) _ name _ -> pure ()
+          (P.TypeDeclaration (P.TypeDeclarationData (span, _) ident _ ), IdeDeclValue valueDecl)
+            | ident == _ideValueIdent valueDecl -> do
+              traceM "\n\n**** Type declaration"
+              traceShowM ident
+              traceM (P.displaySourceSpan "." span)
+          (P.ValueDeclaration (P.ValueDeclarationData (span, _) ident _ _ _), IdeDeclValue valueDecl)
+            | ident == _ideValueIdent valueDecl -> do
+              traceM "\n\n**** Value declaration"
+              traceShowM ident
+              traceM (P.displaySourceSpan "." span)
+          _ -> pure ()
       for_ mbDeclarationRefs \declarationRefs -> do
         ifor_ declarationRefs \i declarationRef -> do
           -- @NOTE: in here we have ref to the export

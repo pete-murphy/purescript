@@ -90,7 +90,8 @@ spec = describe "Finding Usages" $ do
         Test.runIde [ load ["FindUsage", "FindUsage.Definition", "FindUsage.Reexport"]
                     , usage (Test.mn "FindUsage.Definition") "usageId" IdeNSValue
                     ]
-      for_ xs (traceM . ("\n*** " <>) . P.displaySourceSpan ".")
+      -- ifor_ xs (traceM . ("\n*** " <>) . P.displaySourceSpan ".")
+      pure ()
      
     xit "finds a simple recursive usage" $ do
       ([_, Right (UsagesResult [usage1])], _) <- Test.inProject $
