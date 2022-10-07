@@ -1,6 +1,7 @@
 {-# OPTIONS_GHC -Wno-deprecations #-}
 {-# OPTIONS_GHC -Wno-unused-local-binds #-}
 {-# OPTIONS_GHC -Wno-unused-matches #-}
+{-# OPTIONS_GHC -Wno-unused-top-binds #-}
 {-# OPTIONS_GHC -Wno-unused-imports #-}
 {-# LANGUAGE BlockArguments #-}
 
@@ -31,6 +32,23 @@ import Control.Arrow ((&&&), (***))
 import Control.Lens.Combinators (ifor_, itraverse_)
 import Protolude.Partial (fromJust)
 import Language.PureScript.Names (disqualify)
+import Protolude.Error (error)
+
+-- @TODO
+matchingDeclarations :: IdeDeclaration -> [P.Declaration] -> [P.Declaration]
+matchingDeclarations = \case
+  IdeDeclValue valueDecl -> filter \case
+    P.ValueDeclaration (P.ValueDeclarationData (span, _) ident _ _ _) -> ident == _ideValueIdent valueDecl
+    P.TypeDeclaration (P.TypeDeclarationData (span, _) ident _) -> ident == _ideValueIdent valueDecl
+    _ -> False
+  _ -> \xs -> xs
+
+declarationToSpan :: P.Declaration -> P.SourceSpan
+declarationToSpan = \case
+  P.ValueDeclaration (P.ValueDeclarationData (span, _) _ _ _ _) -> span
+  P.TypeDeclaration (P.TypeDeclarationData (span, _) _ _) -> span
+  _ -> error "TODO"
+  
 
 -- |
 -- How we find usages, given an IdeDeclaration and the module it was defined in:
@@ -54,37 +72,38 @@ findUsages ideDeclaration moduleName = do
   let searchesByModuleName = eligibleModules (moduleName, ideDeclaration) ideDeclarationAnnsByModuleName modulesByModuleName
 
   let moduleItWasDefinedIn = Map.lookup moduleName modulesByModuleName
-  for_ moduleItWasDefinedIn
+  let additionalSpans = case moduleItWasDefinedIn of
     -- @NOTE: This is the module that has the definition
     -- declarations should have the value/type decl
     -- refs has export reference
-    \(P.Module _ _ _ declarations mbDeclarationRefs) -> do
-      ifor_ declarations \i declaration -> do
-        -- traceM ("\n\n(declaration:" <> show i <> "):")
-        -- traceShowM declaration
-        case (declaration, ideDeclaration) of
-          -- P.DataDeclaration (span, _) _ name z z'  -> pure ()
-          -- @TODO: Recur here
-          -- P.DataBindingGroupDeclaration _ -> pure ()
-          -- P.TypeSynonymDeclaration (span, _) name _ _ -> pure ()
-          -- P.KindDeclaration (span, _) _ name _ -> pure ()
-          (P.TypeDeclaration (P.TypeDeclarationData (span, _) ident _ ), IdeDeclValue valueDecl)
-            | ident == _ideValueIdent valueDecl -> do
-              traceM "\n\n**** Type declaration"
-              traceShowM ident
-              traceM (P.displaySourceSpan "." span)
-          (P.ValueDeclaration (P.ValueDeclarationData (span, _) ident _ _ _), IdeDeclValue valueDecl)
-            | ident == _ideValueIdent valueDecl -> do
-              traceM "\n\n**** Value declaration"
-              traceShowM ident
-              traceM (P.displaySourceSpan "." span)
-          _ -> pure ()
-      for_ mbDeclarationRefs \declarationRefs -> do
-        ifor_ declarationRefs \i declarationRef -> do
-          -- @NOTE: in here we have ref to the export
-          for_ (spanOfRefMatching ideDeclaration declarationRef) \span -> do 
-            traceM ("\n\n(declarationRef:" <> show i <> "):")
-            traceM (P.displaySourceSpan "." span)
+        Just (P.Module _ _ _ declarations mbDeclarationRefs) -> declarationToSpan <$> matchingDeclarations ideDeclaration declarations 
+        _ -> []
+      -- ifor_ declarations \i declaration -> do
+      --   -- traceM ("\n\n(declaration:" <> show i <> "):")
+      --   -- traceShowM declaration
+      --   case (declaration, ideDeclaration) of
+      --     -- P.DataDeclaration (span, _) _ name z z'  -> pure ()
+      --     -- @TODO: Recur here
+      --     -- P.DataBindingGroupDeclaration _ -> pure ()
+      --     -- P.TypeSynonymDeclaration (span, _) name _ _ -> pure ()
+      --     -- P.KindDeclaration (span, _) _ name _ -> pure ()
+      --     (P.TypeDeclaration (P.TypeDeclarationData (span, _) ident _), IdeDeclValue valueDecl)
+      --       | ident == _ideValueIdent valueDecl -> do
+      --         traceM "\n\n**** Type declaration"
+      --         traceShowM ident
+      --         traceM (P.displaySourceSpan "." span)
+      --     (P.ValueDeclaration (P.ValueDeclarationData (span, _) ident _ _ _), IdeDeclValue valueDecl)
+      --       | ident == _ideValueIdent valueDecl -> do
+      --         traceM "\n\n**** Value declaration"
+      --         traceShowM ident
+      --         traceM (P.displaySourceSpan "." span)
+      --     _ -> pure ()
+      -- for_ mbDeclarationRefs \declarationRefs -> do
+      --   ifor_ declarationRefs \i declarationRef -> do
+      --     -- @NOTE: in here we have ref to the export
+      --     for_ (spanOfRefMatching ideDeclaration declarationRef) \span -> do 
+      --       traceM ("\n\n(declarationRef:" <> show i <> "):")
+      --       traceM (P.displaySourceSpan "." span)
   
   let sourceSpansByModuleName = searchesByModuleName & Map.mapWithKey 
         \moduleName' searches -> do
@@ -101,7 +120,8 @@ findUsages ideDeclaration moduleName = do
   -- @TODO: Need to add to this
   --  - the definition site
   --  - all imports
-  pure (Map.mapMaybe nonEmpty sourceSpansByModuleName)
+  let x = sourceSpansByModuleName & Map.insertWith (<>) moduleName additionalSpans
+  pure (Map.mapMaybe nonEmpty x)
 
 -- | A declaration can either be imported qualified, or unqualified. All the
 -- information we need to find usages through a Traversal is thus captured in
@@ -131,35 +151,19 @@ directDependants declaration modulesByModuleName moduleName = Map.mapMaybe (nonE
     go :: P.Module -> [([Search], [P.SourceSpan])]
     go = foldMap isImporting . P.getModuleDeclarations
 
+    -- These spans are referring to just the spans in the import declaration
     isImporting :: P.Declaration -> [([P.Qualified IdeDeclaration], [P.SourceSpan])]
     isImporting d = pure case d of
       P.ImportDeclaration _ moduleName' importDeclarationType qual
         | moduleName == moduleName' -> map (P.Qualified (P.byMaybeModuleName qual)) `first` case importDeclarationType of
           P.Implicit -> do
-            -- traceM "\n______________________"
-            -- traceM "Implicit"
-            -- traceShowM d
             ([declaration], [])
-          P.Explicit refs
-            | any (isJust . spanOfRefMatching declaration) refs -> do
-              -- traceM "\n______________________"
-              -- traceM "P.Explicit refs with refs matching declaration"
-              -- for_ refs (traceM . ("\n >>> " <>) . show)
-              ([declaration], mapMaybe (spanOfRefMatching declaration) refs)
-          P.Explicit refs -> do
-            -- traceM "\n______________________"
-            -- traceM "P.Explicit refs with NO refs matching declaration"
-            -- for_ refs (traceM . ("\n >>> " <>) . show)
-            ([], mapMaybe (spanOfRefMatching declaration) refs)
-          P.Hiding refs
-            | not (any (isJust . spanOfRefMatching declaration) refs) -> do
-              -- traceM "\n______________________"
-              -- traceM "P.Hiding refs"
-              -- for_ refs (traceM . ("\n >>> " <>) . show)
-              ([declaration], mapMaybe (spanOfRefMatching declaration) refs)
-          P.Hiding refs -> do
-            traceM "Hiding"
-            ([], mapMaybe (spanOfRefMatching declaration) refs)
+          P.Explicit refs -> case mapMaybe (spanOfRefMatching declaration) refs of
+            [] -> ([], [])
+            spans -> ([declaration], spans)
+          P.Hiding refs -> case mapMaybe (spanOfRefMatching declaration) refs of
+            [] -> ([declaration], [])
+            spans -> ([], spans)
       _ -> ([], [])
 
 -- | Determines whether an IdeDeclaration is referenced by a DeclarationRef.

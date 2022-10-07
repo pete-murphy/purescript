@@ -57,7 +57,7 @@ _UsagesResult = prism' UsagesResult \case
 
 spec :: Spec
 spec = describe "Finding Usages" $ do
-    xit "finds a simple usage (NEW)" $ do
+    it "finds a simple usage (NEW)" $ do
 
       ([_, Right (UsagesResult
         [ usage1
@@ -84,7 +84,7 @@ spec = describe "Finding Usages" $ do
       usage1 `shouldBeUsage` ("src" </> "FindUsage.purs", "12:11-12:18")
       usage2 `shouldBeUsage` ("src" </> "FindUsage" </> "Definition.purs", "13:18-13:25")
 
-    it "finds a simple usage" $ do
+    xit "finds a simple usage" $ do
 
       ([_, Right (UsagesResult xs)], _) <- Test.inProject $
         Test.runIde [ load ["FindUsage", "FindUsage.Definition", "FindUsage.Reexport"]
